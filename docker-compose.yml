@@ -1,0 +1,208 @@
+services:
+  redis_server:
+    container_name: infra.redis
+    image: redis:7-alpine
+    restart: always
+    hostname: redis.server
+    volumes:
+      - infra.redis.data:/data
+    command: redis-server --port $REDIS_PORT --save 20 1 --loglevel warning --requirepass $REDIS_PASS
+    ports:
+      - 127.0.0.1:6379:6379
+    healthcheck:
+      test: "[ $$(redis-cli -h redis.server -p ${REDIS_PORT} -a ${REDIS_PASS} ping) = 'PONG' ] || exit 1"
+      interval: 1s
+      retries: 15
+      timeout: 15s
+    env_file:
+      - ".env"
+    networks:
+      - infra.redis.network
+
+  postgres_server:
+    container_name: infra.postgres
+    image: postgres:16-alpine
+    restart: always
+    hostname: postgres.server
+    volumes:
+      - infra.postgres.data:/var/lib/postgresql/data
+    command: "postgres -c max_connections=150
+              -c shared_buffers=512MB -c effective_cache_size=1536MB
+              -c maintenance_work_mem=128MB -c checkpoint_completion_target=0.9 -c wal_buffers=16MB
+              -c default_statistics_target=100 -c random_page_cost=1.1 -c effective_io_concurrency=200
+              -c work_mem=3495kB -c min_wal_size=1GB -c max_wal_size=4GB -c max_worker_processes=2
+              -c max_parallel_workers_per_gather=1 -c max_parallel_workers=2 -c max_parallel_maintenance_workers=1"
+    ports:
+      - 127.0.0.1:5432:5432
+    healthcheck:
+      test: "pg_isready -d ${DB_NAME} -U ${DB_USER}"
+      interval: 1s
+      retries: 15
+      timeout: 15s
+    env_file:
+      - ".env"
+    networks:
+      - infra.postgres.network
+    environment:
+      POSTGRES_USER: $DB_USER
+      POSTGRES_PASSWORD: $DB_PASS
+      POSTGRES_DB: $DB_NAME
+      POSTGRES_HOST_AUTH_METHOD: md5
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200k"
+        max-file: "10"
+
+  nats_server:
+    container_name: infra.nats
+    image: nats:2.10-alpine
+    restart: always
+    hostname: nats.server
+    volumes:
+      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - infra.nats.data:/data
+    command: nats-server --config /etc/nats/nats-server.conf
+    ports:
+      - 127.0.0.1:4222:4222
+      - 127.0.0.1:6222:6222
+      - 127.0.0.1:8222:8222
+    env_file:
+      - ".env"
+    healthcheck:
+      test: "[ $$(wget -S -O /dev/null -q localhost:8222/varz 2>&1 | awk '/HTTP/{print $2}') = '200' ] || exit 1"
+      interval: 1s
+      retries: 15
+      timeout: 15s
+    networks:
+      - infra.nats.network
+
+  cadvisor:
+    container_name: infra.cadvisor
+    image: gcr.io/cadvisor/cadvisor
+    restart: always
+    hostname: cadvisor.server
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    ports:
+      - 8080:8080
+    networks:
+      - infra.prometheus.network
+
+  prometheus:
+    container_name: infra.prometheus
+    image: prom/prometheus
+    restart: always
+    hostname: prometheus.server
+    volumes:
+      - ./prometheus:/etc/prometheus/
+      - infra.prometheus.data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--storage.tsdb.retention.size=15GB'
+    ports:
+      - 9090:9090
+    networks:
+      - infra.prometheus.network
+      - infra.grafana.network
+    depends_on:
+      - cadvisor
+
+  node-exporter:
+    container_name: infra.node-exporter
+    image: prom/node-exporter
+    restart: always
+    hostname: node-exporter.server
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points'
+      - '^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)'
+    ports:
+      - 9100:9100
+    networks:
+      - infra.prometheus.network
+
+  loki:
+    container_name: infra.loki
+    image: grafana/loki:2.8.2
+    restart: unless-stopped
+    hostname: loki.server
+    volumes:
+      - ./loki/config.yaml:/etc/loki/config.yaml:ro
+      - infra.loki.data:/tmp/:rw
+    command: -config.file=/etc/loki/config.yaml
+    ports:
+      - 3100:3100
+    networks:
+      - infra.grafana.network
+      - infra.loki.network
+
+  vector:
+    container_name: infra.vector
+    image: timberio/vector:0.29.1-alpine
+    restart: unless-stopped
+    hostname: vector.server
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./vector/vector.toml:/etc/vector/vector.toml:ro
+    ports:
+      - 8383:8383
+    networks:
+      - infra.loki.network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+
+  grafana:
+    container_name: infra.grafana
+    image: grafana/grafana
+    restart: always
+    hostname: grafana.server
+    volumes:
+      - ./grafana/grafana.ini:/etc/grafana/grafana.ini
+      - ./grafana/provisioning/:/etc/grafana/provisioning/
+      - infra.grafana.data:/var/lib/grafana
+    env_file:
+      - ./grafana/config.monitoring
+    environment:
+      GF_INSTALL_PLUGINS: 'grafana-clock-panel,grafana-simple-json-datasource'
+    ports:
+      - 3000:3000
+    networks:
+      - infra.grafana.network
+    depends_on:
+      - prometheus
+
+volumes:
+  infra.postgres.data: {}
+  infra.redis.data: {}
+  infra.nats.data: {}
+  infra.prometheus.data: {}
+  infra.grafana.data: {}
+  infra.loki.data: {}
+
+networks:
+  infra.postgres.network:
+    external: true
+  infra.redis.network:
+    external: true
+  infra.nats.network:
+    external: true
+  infra.prometheus.network:
+    external: true
+  infra.grafana.network:
+    external: true
+  infra.loki.network:
+    external: true
