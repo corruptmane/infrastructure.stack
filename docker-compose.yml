@@ -60,7 +60,7 @@ services:
     restart: always
     hostname: nats.server
     volumes:
-      - ./nats-server.conf:/etc/nats/nats-server.conf:ro
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
       - infra.nats.data:/data
     command: nats-server --config /etc/nats/nats-server.conf
     ports:
