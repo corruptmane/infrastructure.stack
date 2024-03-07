@@ -4,7 +4,7 @@ datasources:
   - name: Loki
     type: loki
     access: proxy
-    url: http://loki.server:3100
+    url: http://loki-server:3100
     basicAuth: false
     isDefault: true
     editable: true

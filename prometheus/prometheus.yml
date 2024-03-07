@@ -18,7 +18,7 @@ scrape_configs:
       port: 8080
     static_configs:
       - targets:
-        - 'cadvisor.server:8080'
+        - 'cadvisor-server:8080'
 
   - job_name: 'node-exporter'
     dns_sd_configs:
@@ -28,4 +28,4 @@ scrape_configs:
       port: 9100
     static_configs:
       - targets:
-        - 'node-exporter.server:9100'
+        - 'node_exporter-server:9100'
